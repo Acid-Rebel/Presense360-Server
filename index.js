@@ -155,7 +155,7 @@ app.patch('/api/employees/face/:id', async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    if (status === undefined || (status !== 0 && status !== 1)) {
+    if (status === undefined || (status !== 0 && status !== 1 && status !== 2)) {
         return sendResponse(res, 400, 'Invalid status value. Must be 0 or 1.');
     }
 
@@ -231,14 +231,14 @@ app.post('/login', async (req, res) => {
         if (!deviceData) {
             await client.query('INSERT INTO device_id (id, dev_id) VALUES ($1, $2)', [user, id]);
             console.log("Login successful, new device registered");
-            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1h" });
+            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1Y" });
             return res.status(201).json({ message: "Login successful, new device registered", token });
         }
 
         // Case B: Login from the already-registered device
         if (deviceData.dev_id === id) {
             console.log("Login successful");
-            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1h" });
+            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1Y" });
             return res.status(200).json({ message: "Login successful", token });
         }
 
