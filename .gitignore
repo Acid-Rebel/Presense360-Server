@@ -1,0 +1,26 @@
+# Node modules
+node_modules/
+
+# TensorFlow and face-api.js models (exclude large/dependency folders)
+@tensorflow/
+face-api.js-models/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Environment variables
+.env
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Optional: Ignore generated face descriptors (if not manually edited)
+#faceDescriptor.json
+
+# Optional: lock file (keep if you want consistent dependency versions)
+# package-lock.json
+
+.git/

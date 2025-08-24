@@ -1,0 +1,426 @@
+const express = require('express');
+const { Client } = require('pg');
+const cors = require('cors');
+const jwt = require('jsonwebtoken');
+
+const client = new Client({
+    user: 'postgres',
+    host: 'localhost',
+    database: 'Presense360',
+    password: 'sql@123',
+    port: 5432,
+});
+
+client.connect()
+    .then(() => console.log('Connected to PostgreSQL database'))
+    .catch(err => console.error('Connection error', err.stack));
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const JWT_KEY='123456';
+const AUTH_KEY='123456789';
+
+
+const port = 3001;
+
+const sendResponse = (res, status, message, data = null) => {
+    res.status(status).json({ message, data });
+};
+
+
+async function verifyToken(req, res, next) {
+    const bearerHeader = req.headers["authorization"];
+    if (!bearerHeader) {
+        return res.status(401).json({ message: "No token provided" });
+    }
+    
+    const token = bearerHeader.split(" ")[1];
+    if (!token) {
+        return res.status(401).json({ message: "Token format invalid" });
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_KEY);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        return res.status(403).json({ message: "Invalid or expired token" });
+    }
+}
+
+// ====================================================================
+// New Endpoint
+// ====================================================================
+
+// GET: Fetch all available departments
+app.get('/api/departments', async (req, res) => {
+    try {
+        const result = await client.query('SELECT ID, label FROM Department;');
+        sendResponse(res, 200, 'Departments fetched successfully', result.rows);
+    } catch (error) {
+        console.error('Error fetching departments:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
+// ====================================================================
+// Existing Endpoints (unchanged)
+// ====================================================================
+
+// GET: Fetch all employees
+app.get('/api/employees', async (req, res) => {
+    try {
+        const query = `
+            SELECT
+                ui.ID,
+                ui.Name,
+                ui.mobile,
+                ui.Dept,
+                li.LOCID,
+                fi.Status as face_status,
+                d.label as dept_label
+            FROM User_Info ui
+            LEFT JOIN Location_Info li ON ui.ID = li.ID
+            LEFT JOIN Face_Info fi ON ui.ID = fi.ID
+            LEFT JOIN Department d ON ui.Dept = d.ID;
+        `;
+        const result = await client.query(query);
+        sendResponse(res, 200, 'Employees fetched successfully', result.rows);
+    } catch (error) {
+        console.error('Error fetching employees:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
+// GET: Fetch all available locations
+app.get('/api/locations', async (req, res) => {
+    try {
+        const result = await client.query('SELECT ID FROM Locations;');
+        sendResponse(res, 200, 'Locations fetched successfully', result.rows.map(row => row.id));
+    } catch (error) {
+        console.error('Error fetching locations:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
+// POST: Add a new employee
+app.post('/api/employees', async (req, res) => {
+    const { ID, Name, mobile, Dept, LOCID } = req.body;
+    
+    if (!ID || !Name || !mobile || !Dept || !LOCID) {
+        return sendResponse(res, 400, 'Missing required fields');
+    }
+
+    try {
+        await client.query('BEGIN');
+        const userInsert = `INSERT INTO User_Info (ID, Name, mobile, Dept) VALUES ($1, $2, $3, $4) RETURNING *;`;
+        const userResult = await client.query(userInsert, [ID, Name, mobile, Dept]);
+        const loginInsert=`INSERT INTO Login_Info (ID,password) VALUES ($1,$2);`
+        const faceInsert = `INSERT INTO Face_Info (ID, Status) VALUES ($1, 0);`;
+        await client.query(faceInsert, [ID]);
+        const locationInsert = `INSERT INTO Location_Info (ID, LOCID) VALUES ($1, $2);`;
+        await client.query(locationInsert, [ID, LOCID]);
+        await client.query(loginInsert, [ID, '12345']);
+        await client.query('COMMIT');
+        
+        sendResponse(res, 201, 'Employee added successfully', userResult.rows[0]);
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error adding employee:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
+// DELETE: Remove an employee
+app.delete('/api/employees/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM Location_Info WHERE ID = $1;', [id]);
+        await client.query('DELETE FROM Face_Info WHERE ID = $1;', [id]);
+        await client.query('DELETE FROM User_Info WHERE ID = $1;', [id]);
+        await client.query('COMMIT');
+        sendResponse(res, 200, 'Employee deleted successfully');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error deleting employee:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
+// PATCH: Update the face registration status
+app.patch('/api/employees/face/:id', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (status === undefined || (status !== 0 && status !== 1)) {
+        return sendResponse(res, 400, 'Invalid status value. Must be 0 or 1.');
+    }
+
+    try {
+        const query = `UPDATE Face_Info SET Status = $1 WHERE ID = $2;`;
+        await client.query(query, [status, id]);
+        sendResponse(res, 200, `Face status updated to ${status} for ID ${id}`);
+    } catch (error) {
+        console.error('Error updating face status:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
+
+app.get("/geocoordinates", verifyToken, async (req, res) => {
+    const userID = req.user.rollno;
+    console.log("Acquiring coordinates for user ID:", userID);
+
+    try {
+        const queryText = `
+            SELECT T3.coordinates
+            FROM User_Info AS T1
+            INNER JOIN Location_Info AS T2
+                ON T1.ID = T2.ID
+            INNER JOIN Locations AS T3
+                ON T2.LOCID = T3.ID
+            WHERE T1.ID = $1;
+        `;
+        const result = await client.query(queryText, [userID]);
+
+        if (result.rows.length === 0) {
+            // 404 Not Found: No coordinates found for this user.
+            return res.status(404).json({ message: "No coordinates found for this user." });
+        }
+
+        console.log("Found coordinates:", result.rows);
+        // 200 OK: The request has succeeded.
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error("Error acquiring coordinates:", err);
+        // 500 Internal Server Error: The server has encountered a situation it doesn't know how to handle.
+        res.status(500).json({ message: "Internal server error", error: err.message });
+    }
+});
+
+app.post('/login', async (req, res) => {
+    const { user, pass, id } = req.body;
+
+    if (!user || !pass || !id) {
+        return res.status(400).json({ message: "Missing required fields" });
+    }
+
+    try {
+        // 1. Check if the user exists and the password is correct
+        const userResult = await client.query('SELECT * FROM Login_Info WHERE id = $1', [user]);
+        const loginData = userResult.rows[0];
+
+        if (!loginData) {
+            console.log("Wrong user");
+            return res.status(401).json({ message: "Invalid username or password" });
+        }
+
+        if (loginData.password !== pass) {
+            console.log("Wrong password");
+            return res.status(401).json({ message: "Invalid username or password" });
+        }
+
+        // 2. Check the device ID
+        const deviceResult = await client.query('SELECT * FROM device_id WHERE id = $1', [user]);
+        const deviceData = deviceResult.rows[0];
+
+        // Case A: First-time login from a new device
+        if (!deviceData) {
+            await client.query('INSERT INTO device_id (id, dev_id) VALUES ($1, $2)', [user, id]);
+            console.log("Login successful, new device registered");
+            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1h" });
+            return res.status(201).json({ message: "Login successful, new device registered", token });
+        }
+
+        // Case B: Login from the already-registered device
+        if (deviceData.dev_id === id) {
+            console.log("Login successful");
+            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1h" });
+            return res.status(200).json({ message: "Login successful", token });
+        }
+
+        // Case C: Login from a different device
+        console.log("Account already registered on another device");
+        return res.status(403).json({ message: "Account already registered on another device. Please use the original device." });
+
+    } catch (error) {
+        console.error("Database or server error:", error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+app.get("/verify", verifyToken, (req, res) => {
+    // If we get here, the token has been successfully verified by the middleware.
+    console.log("Token is valid for user:", req.user.rollno); // Log the user for server-side clarity
+    res.status(200).json({ message: "Token is valid", status: "success" });
+});
+
+
+
+
+function getFormattedDateTime() {
+    // This is a placeholder. You should implement this function to return
+    // the current date and time in a format compatible with your database.
+    const now = new Date();
+    const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const time = now.toTimeString().slice(0, 8); // HH:MM:SS
+    return `${date} ${time}`;
+}
+
+// ====================================================================
+// New Endpoint for Face Status
+// ====================================================================
+
+// GET: Fetch the user's face registration status
+app.get("/face-status", verifyToken, async (req, res) => {
+    const userID = req.user.rollno;
+    try {
+        const result = await client.query('SELECT Status FROM Face_Info WHERE ID = $1;', [userID]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Face status not found for this user." });
+        }
+        res.status(200).json({ status: result.rows[0].status });
+    } catch (err) {
+        console.error("Error fetching face status:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+// POST: Update the user's face registration status
+app.post("/face-status/update", verifyToken, async (req, res) => {
+    const userID = req.user.rollno;
+    const { status } = req.body;
+    if (status === undefined || (status !== 0 && status !== 1 && status !== 2)) {
+        return res.status(400).json({ message: "Invalid status value. Must be 0, 1, or 2." });
+    }
+
+    try {
+        await client.query('UPDATE Face_Info SET Status = $1 WHERE ID = $2;', [status, userID]);
+        res.status(200).json({ message: "Face status updated successfully." });
+    } catch (err) {
+        console.error("Error updating face status:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+// ====================================================================
+// Check-in and Check-out Endpoints
+// ====================================================================
+
+// GET: Get user's check-in status
+app.get("/dashboard/status/stat", verifyToken, async (req, res) => {
+    const user = req.user.rollno;
+    const today = getFormattedDateTime().slice(0, 10);
+
+    try {
+        const result = await client.query('SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2', [user, today]);
+
+        if (result.rows.length === 0) {
+            // User has no entry for today, so they are not checked in
+            return res.status(200).json({ message: "No entry found for today" });
+        }
+
+        // Return the existing entry
+        res.status(200).json(result.rows[0]);
+    } catch (err) {
+        console.error("Error fetching check-in status:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+// POST: Check-in logic
+app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
+    const user = req.user.rollno;
+    const datetime = getFormattedDateTime();
+    const date = datetime.slice(0, 10);
+    const time = datetime.slice(11, 19);
+
+    try {
+        const existingEntry = await client.query('SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2', [user, date]);
+
+        if (existingEntry.rows.length === 0) {
+            // No entry exists, insert a new one
+            await client.query('INSERT INTO user_attendance (ID, currdate, checkin, checkout, type) VALUES ($1, $2, $3, NULL, 0)', [user, date, time]);
+            return res.status(201).json({ message: "Checked in successfully" });
+        } else if (existingEntry.rows[0].checkin === null) {
+            // Entry exists but no check-in time is recorded (e.g., from a leave request)
+            await client.query('UPDATE user_attendance SET type = 0, checkin = $1 WHERE ID = $2 AND currdate = $3', [time, user, date]);
+            return res.status(200).json({ message: "Checked in successfully" });
+        } else {
+            // User is already checked in
+            return res.status(400).json({ message: "Already checked in" });
+        }
+    } catch (err) {
+        console.error("Error during checkin:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+// POST: Checkout logic
+app.post("/dashboard/status/checkout", verifyToken, async (req, res) => {
+    const user = req.user.rollno;
+    const datetime = getFormattedDateTime();
+    const date = datetime.slice(0, 10);
+    const time = datetime.slice(11, 19);
+
+    try {
+        const existingEntry = await client.query('SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2', [user, date]);
+
+        if (existingEntry.rows.length === 0 || existingEntry.rows[0].checkin === null) {
+            // User has no entry for today or has not checked in
+            return res.status(400).json({ message: "Not checked in for today" });
+        } else if (existingEntry.rows[0].checkout !== null) {
+            // User has already checked out
+            return res.status(400).json({ message: "Already checked out" });
+        } else {
+            // Update the existing entry with checkout time
+            await client.query('UPDATE user_attendance SET checkout = $1 WHERE ID = $2 AND currdate = $3', [time, user, date]);
+            return res.status(200).json({ message: "Checked out successfully" });
+        }
+    } catch (err) {
+        console.error("Error during checkout:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+
+
+app.get("/dashboard", verifyToken, async (req, res) => {
+    const userID = req.user.rollno; // Assuming rollno maps to ID
+
+    try {
+        const queryText = `
+            SELECT 
+                ui.ID, 
+                ui.Name, 
+                ui.mobile, 
+                d.label AS Dept
+            FROM User_Info ui
+            INNER JOIN Department d ON ui.Dept = d.ID
+            WHERE ui.ID = $1;
+        `;
+
+        const result = await client.query(queryText, [userID]);
+
+        if (result.rows.length === 0) {
+            console.log(`User with ID ${userID} not found.`);
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        console.log("Dashboard data fetched:", result.rows[0]);
+        res.status(200).json(result.rows[0]);
+
+    } catch (err) {
+        console.error("Error fetching dashboard data:", err);
+        res.status(500).json({ message: "Internal server error", error: err.message });
+    }
+});
+
+
+
+app.listen(port,'0.0.0.0',() => {
+    console.log(`Server is running on http://localhost:${port}`);
+});
