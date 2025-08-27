@@ -133,6 +133,39 @@ app.post('/api/employees', async (req, res) => {
     }
 });
 
+// Update an employee
+
+// New PUT route for updating an existing employee
+app.put('/api/employees/:id', async (req, res) => {
+    const { Name, mobile, Dept, LOCID } = req.body;
+    const { id } = req.params; // Extract ID from the URL
+
+    // Validate that all required fields are present
+    if (!id || !Name || !mobile || !Dept || !LOCID) {
+        return sendResponse(res, 400, 'Missing required fields');
+    }
+
+    try {
+        await client.query('BEGIN'); // Start a transaction
+
+        // Update User_Info table
+        const userUpdateQuery = `UPDATE User_Info SET Name = $1, mobile = $2, Dept = $3 WHERE ID = $4;`;
+        await client.query(userUpdateQuery, [Name, mobile, Dept, id]);
+
+        // Update Location_Info table
+        const locationUpdateQuery = `UPDATE Location_Info SET LOCID = $1 WHERE ID = $2;`;
+        await client.query(locationUpdateQuery, [LOCID, id]);
+
+        await client.query('COMMIT'); // Commit the transaction if successful
+
+        sendResponse(res, 200, 'Employee updated successfully');
+    } catch (error) {
+        await client.query('ROLLBACK'); // Rollback the transaction on error
+        console.error('Error updating employee:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
+
 // DELETE: Remove an employee
 app.delete('/api/employees/:id', async (req, res) => {
     const { id } = req.params;
@@ -140,6 +173,9 @@ app.delete('/api/employees/:id', async (req, res) => {
         await client.query('BEGIN');
         await client.query('DELETE FROM Location_Info WHERE ID = $1;', [id]);
         await client.query('DELETE FROM Face_Info WHERE ID = $1;', [id]);
+        await client.query('DELETE FROM Login_Info WHERE ID = $1;', [id]);
+        await client.query('DELETE FROM Device_ID WHERE ID = $1;', [id]);
+        await client.query('DELETE FROM User_Attendance WHERE ID = $1;', [id]);
         await client.query('DELETE FROM User_Info WHERE ID = $1;', [id]);
         await client.query('COMMIT');
         sendResponse(res, 200, 'Employee deleted successfully');
