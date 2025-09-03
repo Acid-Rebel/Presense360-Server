@@ -3,12 +3,10 @@ const { Client } = require('pg');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
+const connectionString =process.env.DATABASE_URL || "postgres://postgres:sql@123@localhost:5432/Presense360"
 const client = new Client({
-    user: 'postgres',
-    host: 'localhost',
-    database: 'Presense360',
-    password: 'sql@123',
-    port: 5432,
+  connectionString, 
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
 client.connect()
