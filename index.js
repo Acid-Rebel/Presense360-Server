@@ -48,6 +48,11 @@ async function verifyToken(req, res, next) {
     }
 }
 
+//Ping
+app.get('/api/ping', async (req, res) => {
+    res.sendStatus(200);
+});
+
 // ====================================================================
 // New Endpoint
 // ====================================================================
