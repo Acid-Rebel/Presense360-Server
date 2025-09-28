@@ -458,7 +458,40 @@ app.get("/dashboard", verifyToken, async (req, res) => {
     }
 });
 
+app.get("/attendance", verifyToken, async (req, res) => {
+    // Assuming 'rollno' from the JWT token maps to 'ID' in the database.
+    const userID = req.user.rollno;
+    
+    try {
+        const queryText = `
+            SELECT 
+                currdate, 
+                checkin, 
+                checkout, 
+                type
+            FROM user_attendance
+            WHERE ID = $1
+            ORDER BY currdate DESC;
+        `;
+        
+        const result = await client.query(queryText, [userID]);
 
+        // 200 OK: Return the array of attendance records.
+        res.status(200).json({ 
+            message: "Attendance records fetched successfully",
+            data: result.rows 
+        });
+
+    } catch (err) {
+        console.error("Error fetching attendance for user", userID, ":", err);
+        
+        // 500 Internal Server Error: Send a detailed JSON error response.
+        res.status(500).json({ 
+            message: "Internal server error while retrieving attendance data",
+            error: err.message 
+        });
+    }
+});
 
 app.listen(port,'0.0.0.0',() => {
     console.log(`Server is running on http://localhost:${port}`);
