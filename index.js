@@ -497,63 +497,73 @@ app.get("/attendance", verifyToken, async (req, res) => {
 // Define the assumed shift start time for 'Late' calculation
 const SHIFT_START_TIME = '09:00:00';
 
-app.get("/api/attendance/report", async (req, res) => {
-    const userID = req.user.rollno;
+app.get("/api/attendance/report", verifyToken, async (req, res) => {
+    // NOTE: The WHERE clause restricting by user ID has been REMOVED.
+    // The query now returns all records visible to the admin.
     
     try {
         const queryText = `
             SELECT 
-                ID,
-                currdate, 
-                checkin, 
-                checkout, 
-                type,
-                -- 1. Infer final status label (backend inferencing)
+                ua.ID,
+                ui.Name AS employee_name, -- Added employee name via join
+                ua.currdate, 
+                ua.checkin, 
+                ua.checkout, 
+                ua.type,
+                -- 1. Infer final status label
                 CASE
                     -- Type-based statuses (highest priority)
-                    WHEN type = 1 THEN 'On Leave (Standard)'
-                    WHEN type = 2 THEN 'On Leave (Medical)'
-                    WHEN type = 3 THEN 'Public Holiday'
-                    WHEN type = 4 THEN 'Absent (Confirmed)'
-                    WHEN type = 5 AND checkin IS NULL AND checkout IS NULL THEN 'Not Checked In' -- Before threshold time
+                    WHEN ua.type = 1 THEN 'On Leave'
+                    WHEN ua.type = 2 THEN 'On Leave (Medical)'
+                    WHEN ua.type = 3 THEN 'Public Holiday'
+                    WHEN ua.type = 4 THEN 'Absent'
+                    WHEN ua.type = 5 AND ua.checkin IS NULL AND ua.checkout IS NULL THEN 'Not Checked In'
 
-                    -- Attendance-based statuses (0 = Present)
-                    WHEN type = 0 AND checkin IS NOT NULL AND checkout IS NULL THEN 
-                         'Present (Clocked In)' -- Currently checked in
-                    WHEN type = 0 AND checkin IS NOT NULL AND checkout IS NOT NULL THEN
-                        -- Check for lateness based on checkin time
+                    -- Attendance-based statuses (type 0 = Present)
+                    WHEN ua.type = 0 AND ua.checkin IS NOT NULL AND ua.checkout IS NOT NULL THEN
+                         -- Check for lateness based on checkin time
                         CASE
-                            WHEN checkin > TIME '${SHIFT_START_TIME}' THEN 'Late'
+                            WHEN ua.checkin > TIME '${SHIFT_START_TIME}' THEN 'Late'
                             ELSE 'Present'
                         END
+                    WHEN ua.type = 0 AND ua.checkin IS NOT NULL AND ua.checkout IS NULL THEN 
+                         'Present (Clocked In)' -- Currently checked in (Missing Checkout Exception)
                     
-                    -- Catch-all for data inconsistency or absent type 0 entries
+                    -- Catch-all
                     ELSE 'Unresolved'
                 END AS final_status,
                 
-                -- 2. Calculate duration (simple mock based on checkin/checkout being present)
+                -- 2. Infer Exception Reason
                 CASE
-                    WHEN checkin IS NOT NULL AND checkout IS NOT NULL THEN
-                        -- Simple time difference calculation (can be complex in production DB)
-                        EXTRACT(EPOCH FROM (checkout - checkin)) / 3600
+                    WHEN ua.type = 4 THEN 'Confirmed Absence'
+                    WHEN ua.type = 0 AND ua.checkout IS NULL AND ua.checkin IS NOT NULL THEN 'Missing Checkout'
+                    WHEN ua.type = 0 AND ua.checkin > TIME '${SHIFT_START_TIME}' AND ua.checkout IS NOT NULL THEN 'Late Checkin'
+                    ELSE NULL
+                END AS exception_reason,
+
+                -- 3. Calculate duration
+                CASE
+                    WHEN ua.checkin IS NOT NULL AND ua.checkout IS NOT NULL THEN
+                        -- Calculate duration in hours
+                        EXTRACT(EPOCH FROM (ua.checkout - ua.checkin)) / 3600
                     ELSE 
                         0
                 END AS duration_hours
-            FROM user_attendance
-            WHERE ID = $1
-            ORDER BY currdate DESC;
+            FROM user_attendance ua
+            INNER JOIN User_Info ui ON ua.ID = ui.ID -- Join to get employee name
+            ORDER BY ua.currdate DESC, ui.Name ASC;
         `;
         
-        const result = await client.query(queryText, [userID]);
+        const result = await client.query(queryText);
 
         // 200 OK: Return the array of attendance records with the calculated status.
         res.status(200).json({ 
-            message: "Attendance records fetched successfully with status inference",
+            message: "All attendance records fetched for admin report",
             data: result.rows 
         });
 
     } catch (err) {
-        console.error("Error fetching attendance for user", userID, ":", err);
+        console.error("Error fetching admin report attendance data:", err);
         
         res.status(500).json({ 
             message: "Internal server error while retrieving attendance data",
@@ -561,6 +571,7 @@ app.get("/api/attendance/report", async (req, res) => {
         });
     }
 });
+
 
 
 app.listen(port,'0.0.0.0',() => {
