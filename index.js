@@ -497,7 +497,7 @@ app.get("/attendance", verifyToken, async (req, res) => {
 // Define the assumed shift start time for 'Late' calculation
 const SHIFT_START_TIME = '09:00:00';
 
-app.get("/api/attendance/report", verifyToken, async (req, res) => {
+app.get("/api/attendance/report", async (req, res) => {
     // NOTE: The WHERE clause restricting by user ID has been REMOVED.
     // The query now returns all records visible to the admin.
     
