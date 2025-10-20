@@ -493,6 +493,76 @@ app.get("/attendance", verifyToken, async (req, res) => {
     }
 });
 
+
+// Define the assumed shift start time for 'Late' calculation
+const SHIFT_START_TIME = '09:00:00';
+
+app.get("/api/attendance/report", async (req, res) => {
+    const userID = req.user.rollno;
+    
+    try {
+        const queryText = `
+            SELECT 
+                ID,
+                currdate, 
+                checkin, 
+                checkout, 
+                type,
+                -- 1. Infer final status label (backend inferencing)
+                CASE
+                    -- Type-based statuses (highest priority)
+                    WHEN type = 1 THEN 'On Leave (Standard)'
+                    WHEN type = 2 THEN 'On Leave (Medical)'
+                    WHEN type = 3 THEN 'Public Holiday'
+                    WHEN type = 4 THEN 'Absent (Confirmed)'
+                    WHEN type = 5 AND checkin IS NULL AND checkout IS NULL THEN 'Not Checked In' -- Before threshold time
+
+                    -- Attendance-based statuses (0 = Present)
+                    WHEN type = 0 AND checkin IS NOT NULL AND checkout IS NULL THEN 
+                         'Present (Clocked In)' -- Currently checked in
+                    WHEN type = 0 AND checkin IS NOT NULL AND checkout IS NOT NULL THEN
+                        -- Check for lateness based on checkin time
+                        CASE
+                            WHEN checkin > TIME '${SHIFT_START_TIME}' THEN 'Late'
+                            ELSE 'Present'
+                        END
+                    
+                    -- Catch-all for data inconsistency or absent type 0 entries
+                    ELSE 'Unresolved'
+                END AS final_status,
+                
+                -- 2. Calculate duration (simple mock based on checkin/checkout being present)
+                CASE
+                    WHEN checkin IS NOT NULL AND checkout IS NOT NULL THEN
+                        -- Simple time difference calculation (can be complex in production DB)
+                        EXTRACT(EPOCH FROM (checkout - checkin)) / 3600
+                    ELSE 
+                        0
+                END AS duration_hours
+            FROM user_attendance
+            WHERE ID = $1
+            ORDER BY currdate DESC;
+        `;
+        
+        const result = await client.query(queryText, [userID]);
+
+        // 200 OK: Return the array of attendance records with the calculated status.
+        res.status(200).json({ 
+            message: "Attendance records fetched successfully with status inference",
+            data: result.rows 
+        });
+
+    } catch (err) {
+        console.error("Error fetching attendance for user", userID, ":", err);
+        
+        res.status(500).json({ 
+            message: "Internal server error while retrieving attendance data",
+            error: err.message 
+        });
+    }
+});
+
+
 app.listen(port,'0.0.0.0',() => {
     console.log(`Server is running on http://localhost:${port}`);
 });
