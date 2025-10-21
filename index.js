@@ -2,6 +2,7 @@ const express = require('express');
 const { Client } = require('pg');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const { startAttendanceScheduler } = require('./attendance_scheduler'); 
 
 const connectionString =process.env.DATABASE_URL || "postgres://postgres:sql@123@localhost:5432/Presense360"
 const client = new Client({
@@ -10,7 +11,10 @@ const client = new Client({
 });
 
 client.connect()
-    .then(() => console.log('Connected to PostgreSQL database'))
+    .then(() => {
+        console.log('Connected to PostgreSQL database')
+        startAttendanceScheduler();
+    })
     .catch(err => console.error('Connection error', err.stack));
 
 const app = express();
