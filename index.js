@@ -52,9 +52,35 @@ async function verifyToken(req, res, next) {
     }
 }
 
-//Ping
+// Database Health Check Endpoint
 app.get('/api/ping', async (req, res) => {
-    res.sendStatus(200);
+    // A simple, fast query that verifies the database connection is active.
+    const DB_HEALTH_QUERY = 'SELECT 1;'; 
+    
+    try {
+        // Execute the lightweight query against PostgreSQL.
+        // This will throw an error if the connection is dead (ECONNRESET) or if the DB is down.
+        await client.query(DB_HEALTH_QUERY);
+        
+        // If the query succeeds, the connection is healthy.
+        // Send status 200 OK with a clear message.
+        res.status(200).json({ 
+            message: "Server and Database connection are healthy.",
+            database: "OK"
+        });
+
+    } catch (error) {
+        // If the query fails, the connection is broken.
+        console.error("Health Check Failed: Database connection error.", error);
+        
+        // Send a 503 Service Unavailable or 500 Internal Server Error.
+        // 503 is often better for monitoring tools as it indicates the dependency is down.
+        res.status(503).json({ 
+            message: "Database connection failed.",
+            database: "ERROR",
+            error: error.code || error.message
+        });
+    }
 });
 
 // ====================================================================
