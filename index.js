@@ -496,7 +496,7 @@ app.get("/attendance", verifyToken, async (req, res) => {
 
 const SHIFT_START_TIME = '09:00:00'; // Define the standard shift start time here
 
-app.get("/api/attendance/report", verifyToken, async (req, res) => {
+app.get("/api/attendance/report", async (req, res) => {
     
     try {
         const queryText = `
