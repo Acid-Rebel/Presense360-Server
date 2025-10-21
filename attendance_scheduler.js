@@ -7,7 +7,9 @@ const cron = require('node-cron');
  * for the current day where no record yet exists.
  * * This should run immediately after midnight to prepare the attendance ledger.
  */
-const runEndOfDayAttendanceJob = async () => {
+// In attendance_scheduler.js:
+// Update this line:
+const runEndOfDayAttendanceJob = async (client) => { // <-- RECEIVE CLIENT HERE
     // Get the current date in 'YYYY-MM-DD' format
     const today = new Date().toISOString().slice(0, 10);
     const ABSENT_TYPE = 4; // 4 is the status code for Absent
@@ -54,16 +56,15 @@ const runEndOfDayAttendanceJob = async () => {
  * Schedule the job to run every day at 00:00 (midnight).
  * CRON format: minute hour day-of-month month day-of-week
  */
-const startAttendanceScheduler = () => {
+const startAttendanceScheduler = (client) => { // <-- ACCEPT CLIENT HERE
     // Ensure the job runs once immediately at service start for testing and alignment
-    runEndOfDayAttendanceJob(); 
+    runEndOfDayAttendanceJob(client); // <-- PASS CLIENT TO THE JOB FUNCTION
     
-    // Schedule to run every day at 1 minute past midnight (to ensure the date has definitely rolled over)
-    cron.schedule('1 0 * * *', runEndOfDayAttendanceJob, {
-        timezone: "Asia/Kolkata" // Set to your required timezone (e.g., India Standard Time)
+    // Schedule to run every day at 1 minute past midnight
+    cron.schedule('1 0 * * *', () => runEndOfDayAttendanceJob(client), { // <-- PASS CLIENT TO CRON JOB
+        timezone: "Asia/Kolkata" 
     });
-
+    
     console.log('[Scheduler] Attendance job scheduled to run daily at 00:01.');
 };
-
 module.exports = { startAttendanceScheduler };

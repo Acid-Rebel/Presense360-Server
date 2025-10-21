@@ -12,8 +12,8 @@ const client = new Client({
 
 client.connect()
     .then(() => {
-        console.log('Connected to PostgreSQL database')
-        startAttendanceScheduler();
+        console.log('Connected to PostgreSQL database');
+        startAttendanceScheduler(client);
     })
     .catch(err => console.error('Connection error', err.stack));
 
