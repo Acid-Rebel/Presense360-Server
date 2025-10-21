@@ -494,26 +494,26 @@ app.get("/attendance", verifyToken, async (req, res) => {
 });
 
 
-// Define the assumed shift start time for 'Late' calculation
-const SHIFT_START_TIME = '09:00:00';
+const SHIFT_START_TIME = '09:00:00'; // Define the standard shift start time here
 
-app.get("/api/attendance/report", async (req, res) => {
-    // NOTE: The WHERE clause restricting by user ID has been REMOVED.
-    // The query now returns all records visible to the admin.
+app.get("/api/attendance/report", verifyToken, async (req, res) => {
     
     try {
         const queryText = `
             SELECT 
                 ua.ID,
-                ui.Name AS employee_name, -- Added employee name via join
+                ui.Name AS employee_name, 
                 ua.currdate, 
                 ua.checkin, 
                 ua.checkout, 
                 ua.type,
+                li.LOCID, -- NEW: Location ID
+                d.label AS dept_label, -- NEW: Department Label
+                
                 -- 1. Infer final status label
                 CASE
                     -- Type-based statuses (highest priority)
-                    WHEN ua.type = 1 THEN 'On Leave'
+                    WHEN ua.type = 1 THEN 'On Leave (Standard)'
                     WHEN ua.type = 2 THEN 'On Leave (Medical)'
                     WHEN ua.type = 3 THEN 'Public Holiday'
                     WHEN ua.type = 4 THEN 'Absent'
@@ -521,13 +521,12 @@ app.get("/api/attendance/report", async (req, res) => {
 
                     -- Attendance-based statuses (type 0 = Present)
                     WHEN ua.type = 0 AND ua.checkin IS NOT NULL AND ua.checkout IS NOT NULL THEN
-                         -- Check for lateness based on checkin time
                         CASE
                             WHEN ua.checkin > TIME '${SHIFT_START_TIME}' THEN 'Late'
                             ELSE 'Present'
                         END
                     WHEN ua.type = 0 AND ua.checkin IS NOT NULL AND ua.checkout IS NULL THEN 
-                         'Present (Clocked In)' -- Currently checked in (Missing Checkout Exception)
+                        'Present (Clocked In)'
                     
                     -- Catch-all
                     ELSE 'Unresolved'
@@ -544,19 +543,27 @@ app.get("/api/attendance/report", async (req, res) => {
                 -- 3. Calculate duration
                 CASE
                     WHEN ua.checkin IS NOT NULL AND ua.checkout IS NOT NULL THEN
-                        -- Calculate duration in hours
                         EXTRACT(EPOCH FROM (ua.checkout - ua.checkin)) / 3600
                     ELSE 
                         0
-                END AS duration_hours
+                END AS duration_hours,
+
+                -- 4. Get Face Status (Assumed from a join to User_Info in the full service)
+                fi.Status AS face_status
+                
             FROM user_attendance ua
-            INNER JOIN User_Info ui ON ua.ID = ui.ID -- Join to get employee name
+            -- REQUIRED JOINS
+            INNER JOIN User_Info ui ON ua.ID = ui.ID
+            LEFT JOIN Location_Info li ON ui.ID = li.ID -- Get Location ID (LOCID)
+            LEFT JOIN Department d ON ui.Dept = d.ID     -- Get Department Label
+            LEFT JOIN Face_Info fi ON ui.ID = fi.ID      -- Get Face Status
+            -- END REQUIRED JOINS
+            
             ORDER BY ua.currdate DESC, ui.Name ASC;
         `;
         
         const result = await client.query(queryText);
 
-        // 200 OK: Return the array of attendance records with the calculated status.
         res.status(200).json({ 
             message: "All attendance records fetched for admin report",
             data: result.rows 
