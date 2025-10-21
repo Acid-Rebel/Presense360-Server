@@ -305,13 +305,29 @@ app.get("/verify", verifyToken, (req, res) => {
 
 
 function getFormattedDateTime() {
-    // This is a placeholder. You should implement this function to return
-    // the current date and time in a format compatible with your database.
     const now = new Date();
-    const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
-    const time = now.toTimeString().slice(0, 8); // HH:MM:SS
+
+    // IST Offset is UTC + 5.5 hours (330 minutes)
+    const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const istTime = new Date(utcTime + (330 * 60000));
+
+    // Helper to pad numbers (e.g., 9 -> 09)
+    const pad = (num) => num.toString().padStart(2, '0');
+
+    const year = istTime.getFullYear();
+    const month = pad(istTime.getMonth() + 1);
+    const day = pad(istTime.getDate());
+    
+    const hours = pad(istTime.getHours());
+    const minutes = pad(istTime.getMinutes());
+    const seconds = pad(istTime.getSeconds());
+
+    const date = `${year}-${month}-${day}`;
+    const time = `${hours}:${minutes}:${seconds}`;
+
     return `${date} ${time}`;
 }
+
 
 // ====================================================================
 // New Endpoint for Face Status
