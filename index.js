@@ -25,7 +25,7 @@ const JWT_KEY='123456';
 const AUTH_KEY='123456789';
 
 
-const port = 3001;
+const port = 3000;
 
 const sendResponse = (res, status, message, data = null) => {
     res.status(status).json({ message, data });
