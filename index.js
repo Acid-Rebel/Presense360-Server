@@ -4,10 +4,10 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { startAttendanceScheduler } = require('./attendance_scheduler'); 
 
-const connectionString =process.env.DATABASE_URL || "postgres://avnadmin:AVNS_8wJSs4U-oUBVaIdhOXg@presense360-db-presense360-db.c.aivencloud.com:19049/defaultdb?sslmode=require"
+const connectionString =process.env.DATABASE_URL || "postgres://postgres:sql@123@localhost:5432/Presense360"
 const client = new Client({
   connectionString, 
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  ssl: process.env.DATABASE_URL_NEW ? { rejectUnauthorized: false } : false,
 });
 
 client.connect()
