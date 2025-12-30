@@ -323,40 +323,56 @@ app.delete('/api/settings/locations/:id', async (req, res) => {
 });
 
 
-
-/**
- * POST: Update System Shift Settings
- * Endpoint: /api/settings/shift
- * Implemented persistent storage logic using UPSERT on a single-row settings table.
- */
-app.post('/api/settings/shift', async (req, res) => {
-    const { entryCap, exitCap } = req.body;
-
-    if (!entryCap || !exitCap) {
-        return res.status(400).json({ error: 'Missing entryCap or exitCap' });
-    }
+app.get('/api/settings/shift/:deptId', async (req, res) => {
+    let { deptId } = req.params;
+    
+    // Handle the 'all' case by mapping it to a consistent ID like 0
+    const targetId = deptId === 'all' ? 0 : deptId;
 
     try {
-        // Using a fixed ID of 1 for global system settings
-        const query = `
-            INSERT INTO system_settings (id, entry_cap, exit_cap)
-            VALUES (1, $1, $2)
-            ON CONFLICT (id)
-            DO UPDATE SET entry_cap = EXCLUDED.entry_cap, exit_cap = EXCLUDED.exit_cap
-            RETURNING entry_cap as "entryCap", exit_cap as "exitCap";
-        `;
-        const result = await client.query(query, [entryCap, exitCap]);
+        const result = await client.query(
+            'SELECT entry_cap AS "entryCap", exit_cap AS "exitCap" FROM ShiftSettings WHERE department_id = $1',
+            [targetId]
+        );
 
-        res.status(200).json({ 
-            message: 'Shift settings updated successfully',
-            data: result.rows[0] 
-        });
+        if (result.rows.length === 0) {
+            // Return default values if no specific setting exists yet
+            return sendResponse(res, 200, 'Default settings returned', { entryCap: '09:00', exitCap: '18:00' });
+        }
+
+        sendResponse(res, 200, 'Shift settings retrieved', result.rows[0]);
     } catch (error) {
-        console.error('Error updating shift settings:', error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error('Error fetching shift settings:', error);
+        sendResponse(res, 500, 'Internal Server Error');
     }
 });
 
+/**
+ * Update shift settings (Upsert logic)
+ */
+app.post('/api/settings/shift', async (req, res) => {
+    const { department_id, entryCap, exitCap } = req.body;
+    
+    // Map 'all' to 0 for the database
+    const targetId = department_id === 'all' ? 0 : department_id;
+
+    try {
+        const query = `
+            INSERT INTO ShiftSettings (department_id, entry_cap, exit_cap)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (department_id)
+            DO UPDATE SET 
+                entry_cap = EXCLUDED.entry_cap,
+                exit_cap = EXCLUDED.exit_cap
+            RETURNING department_id, entry_cap AS "entryCap", exit_cap AS "exitCap";
+        `;
+        const result = await client.query(query, [targetId, entryCap, exitCap]);
+        sendResponse(res, 200, 'Shift settings updated successfully', result.rows[0]);
+    } catch (error) {
+        console.error('Error updating shift settings:', error);
+        sendResponse(res, 500, 'Internal Server Error');
+    }
+});
 
 
 app.get("/geocoordinates", verifyToken, async (req, res) => {
