@@ -323,6 +323,11 @@ app.delete('/api/settings/locations/:id', async (req, res) => {
 });
 
 
+// --- SHIFT SETTINGS ENDPOINTS ---
+
+/**
+ * GET: Fetch shift settings
+ */
 app.get('/api/settings/shift/:deptId', async (req, res) => {
     let { deptId } = req.params;
     const targetId = deptId === 'all' ? 0 : parseInt(deptId, 10);
@@ -349,14 +354,29 @@ app.get('/api/settings/shift/:deptId', async (req, res) => {
 });
 
 /**
- * Update shift settings (Upsert logic)
+ * POST: Update shift settings (Upsert logic)
  */
 app.post('/api/settings/shift', async (req, res) => {
-    const { department_id, entryCap, exitCap } = req.body;
-    const targetId = department_id === 'all' ? 0 : parseInt(department_id, 10);
+    // Check for both naming conventions to prevent 400 errors from frontend mismatches
+    const { department_id, deptId, entryCap, exitCap } = req.body;
+    
+    // Prioritize whichever one is provided
+    const rawId = department_id !== undefined ? department_id : deptId;
+    
+    console.log("DEBUG: Received shift update body:", req.body);
 
-    if (isNaN(targetId) && department_id !== 'all') {
-        return sendResponse(res, 400, 'Invalid Department ID. Expected a number.');
+    if (rawId === undefined) {
+        return sendResponse(res, 400, 'Missing Department ID (department_id or deptId)');
+    }
+
+    const targetId = rawId === 'all' ? 0 : parseInt(rawId, 10);
+
+    if (isNaN(targetId) && rawId !== 'all') {
+        return sendResponse(res, 400, `Invalid Department ID: ${rawId}. Expected a number or 'all'.`);
+    }
+
+    if (!entryCap || !exitCap) {
+        return sendResponse(res, 400, 'Missing entryCap or exitCap');
     }
 
     try {
@@ -370,6 +390,7 @@ app.post('/api/settings/shift', async (req, res) => {
             RETURNING department_id, entry_cap AS "entryCap", exit_cap AS "exitCap";
         `;
         const result = await client.query(query, [targetId, entryCap, exitCap]);
+        console.log("DEBUG: Shift settings updated in DB:", result.rows[0]);
         sendResponse(res, 200, 'Shift settings updated successfully', result.rows[0]);
     } catch (error) {
         console.error('Error updating shift settings:', error);
