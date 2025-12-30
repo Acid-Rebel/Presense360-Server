@@ -243,6 +243,7 @@ app.patch('/api/employees/face/:id', async (req, res) => {
 });
 
 
+
 app.post('/api/locations', async (req, res) => {
     const { id, coordinates } = req.body;
 
@@ -321,11 +322,62 @@ app.delete('/api/locations/:id', async (req, res) => {
     }
 });
 
+/**
+ * GET: Fetch System Shift Settings
+ * Endpoint: /api/settings/shift
+ * Added to resolve the 404 error during initial frontend load.
+ */
+app.get('/api/settings/shift', async (req, res) => {
+    try {
+        // Assumes a table 'system_settings' exists with entry_cap and exit_cap columns
+        const result = await client.query('SELECT entry_cap as "entryCap", exit_cap as "exitCap" FROM system_settings WHERE id = 1;');
+        
+        const settings = result.rows.length > 0 
+            ? result.rows[0] 
+            : { entryCap: '09:00', exitCap: '18:00' }; // Default fallback if no row exists
 
+        res.status(200).json({ data: settings });
+    } catch (error) {
+        console.error('Error fetching shift settings:', error);
+        // Handle case where table might not exist yet during first run
+        if (error.code === '42P01') {
+            return res.status(200).json({ data: { entryCap: '09:00', exitCap: '18:00' } });
+        }
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+/**
+ * POST: Update System Shift Settings
+ * Endpoint: /api/settings/shift
+ * Implemented persistent storage logic using UPSERT on a single-row settings table.
+ */
 app.post('/api/settings/shift', async (req, res) => {
     const { entryCap, exitCap } = req.body;
-    // Logic to save these to a 'system_settings' table or config file
-    res.status(200).json({ message: 'Shift settings updated' });
+
+    if (!entryCap || !exitCap) {
+        return res.status(400).json({ error: 'Missing entryCap or exitCap' });
+    }
+
+    try {
+        // Using a fixed ID of 1 for global system settings
+        const query = `
+            INSERT INTO system_settings (id, entry_cap, exit_cap)
+            VALUES (1, $1, $2)
+            ON CONFLICT (id)
+            DO UPDATE SET entry_cap = EXCLUDED.entry_cap, exit_cap = EXCLUDED.exit_cap
+            RETURNING entry_cap as "entryCap", exit_cap as "exitCap";
+        `;
+        const result = await client.query(query, [entryCap, exitCap]);
+
+        res.status(200).json({ 
+            message: 'Shift settings updated successfully',
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error('Error updating shift settings:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
 });
 
 
