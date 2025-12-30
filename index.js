@@ -326,17 +326,17 @@ app.delete('/api/settings/locations/:id', async (req, res) => {
 app.get('/api/settings/shift/:deptId', async (req, res) => {
     let { deptId } = req.params;
     
-    // Handle the 'all' case by mapping it to a consistent ID like 0
+    // Handle the 'all' case by mapping it to ID 0
     const targetId = deptId === 'all' ? 0 : deptId;
 
     try {
+        // Query the ShiftSettings table (Ensure this table exists in PG)
         const result = await client.query(
             'SELECT entry_cap AS "entryCap", exit_cap AS "exitCap" FROM ShiftSettings WHERE department_id = $1',
             [targetId]
         );
 
         if (result.rows.length === 0) {
-            // Return default values if no specific setting exists yet
             return sendResponse(res, 200, 'Default settings returned', { entryCap: '09:00', exitCap: '18:00' });
         }
 
@@ -353,7 +353,6 @@ app.get('/api/settings/shift/:deptId', async (req, res) => {
 app.post('/api/settings/shift', async (req, res) => {
     const { department_id, entryCap, exitCap } = req.body;
     
-    // Map 'all' to 0 for the database
     const targetId = department_id === 'all' ? 0 : department_id;
 
     try {
@@ -373,7 +372,6 @@ app.post('/api/settings/shift', async (req, res) => {
         sendResponse(res, 500, 'Internal Server Error');
     }
 });
-
 
 app.get("/geocoordinates", verifyToken, async (req, res) => {
     const userID = req.user.rollno;
