@@ -243,6 +243,86 @@ app.patch('/api/employees/face/:id', async (req, res) => {
 });
 
 
+app.post('/api/locations', async (req, res) => {
+    const { id, coordinates } = req.body;
+
+    if (!id || !coordinates || !Array.isArray(coordinates)) {
+        return res.status(400).json({ error: 'Missing location ID or valid coordinates array' });
+    }
+
+    try {
+        // Upsert logic: Insert new location or update coordinates if ID exists
+        const query = `
+            INSERT INTO locations (id, coordinates) 
+            VALUES ($1, $2)
+            ON CONFLICT (id) 
+            DO UPDATE SET coordinates = EXCLUDED.coordinates
+            RETURNING *;
+        `;
+        
+        // coordinates is stored as jsonb, so we pass it directly (pg handles the conversion)
+        const values = [id, JSON.stringify(coordinates)];
+        const result = await client.query(query, values);
+
+        res.status(200).json({
+            message: 'Location saved successfully',
+            data: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Error saving location:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+/**
+ * GET: Fetch all saved geofences
+ * Endpoint: /api/locations
+ */
+app.get('/api/locations', async (req, res) => {
+    try {
+        const result = await client.query('SELECT * FROM locations ORDER BY id ASC;');
+        res.status(200).json({
+            message: 'Locations retrieved successfully',
+            data: result.rows
+        });
+    } catch (error) {
+        console.error('Error fetching locations:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+/**
+ * DELETE: Remove a geofence by ID
+ * Endpoint: /api/locations/:id
+ */
+app.delete('/api/locations/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const result = await client.query('DELETE FROM locations WHERE id = $1 RETURNING id;', [id]);
+        
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'Location not found' });
+        }
+
+        res.status(200).json({
+            message: 'Location deleted successfully',
+            id: id
+        });
+    } catch (error) {
+        // Handle foreign key constraint errors (e.g. location_info referencing this location)
+        if (error.code === '23503') {
+            return res.status(409).json({ 
+                error: 'Cannot delete location as it is currently assigned to employees.' 
+            });
+        }
+        console.error('Error deleting location:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+
+
 app.get("/geocoordinates", verifyToken, async (req, res) => {
     const userID = req.user.rollno;
     console.log("Acquiring coordinates for user ID:", userID);
