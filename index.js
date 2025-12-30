@@ -325,12 +325,13 @@ app.delete('/api/settings/locations/:id', async (req, res) => {
 
 app.get('/api/settings/shift/:deptId', async (req, res) => {
     let { deptId } = req.params;
-    
-    // Handle the 'all' case by mapping it to ID 0
-    const targetId = deptId === 'all' ? 0 : deptId;
+    const targetId = deptId === 'all' ? 0 : parseInt(deptId, 10);
+
+    if (isNaN(targetId) && deptId !== 'all') {
+        return sendResponse(res, 400, 'Invalid Department ID. Expected a number.');
+    }
 
     try {
-        // Query the ShiftSettings table (Ensure this table exists in PG)
         const result = await client.query(
             'SELECT entry_cap AS "entryCap", exit_cap AS "exitCap" FROM ShiftSettings WHERE department_id = $1',
             [targetId]
@@ -352,8 +353,11 @@ app.get('/api/settings/shift/:deptId', async (req, res) => {
  */
 app.post('/api/settings/shift', async (req, res) => {
     const { department_id, entryCap, exitCap } = req.body;
-    
-    const targetId = department_id === 'all' ? 0 : department_id;
+    const targetId = department_id === 'all' ? 0 : parseInt(department_id, 10);
+
+    if (isNaN(targetId) && department_id !== 'all') {
+        return sendResponse(res, 400, 'Invalid Department ID. Expected a number.');
+    }
 
     try {
         const query = `
