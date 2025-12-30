@@ -244,7 +244,7 @@ app.patch('/api/employees/face/:id', async (req, res) => {
 
 
 
-app.post('/api/locations', async (req, res) => {
+app.post('/api/settings/locations', async (req, res) => {
     const { id, coordinates } = req.body;
 
     if (!id || !coordinates || !Array.isArray(coordinates)) {
@@ -279,7 +279,7 @@ app.post('/api/locations', async (req, res) => {
  * GET: Fetch all saved geofences
  * Endpoint: /api/locations
  */
-app.get('/api/locations', async (req, res) => {
+app.get('/api/settings/locations', async (req, res) => {
     try {
         const result = await client.query('SELECT * FROM locations ORDER BY id ASC;');
         res.status(200).json({
@@ -296,7 +296,7 @@ app.get('/api/locations', async (req, res) => {
  * DELETE: Remove a geofence by ID
  * Endpoint: /api/locations/:id
  */
-app.delete('/api/locations/:id', async (req, res) => {
+app.delete('/api/settings/locations/:id', async (req, res) => {
     const { id } = req.params;
 
     try {
@@ -322,30 +322,7 @@ app.delete('/api/locations/:id', async (req, res) => {
     }
 });
 
-/**
- * GET: Fetch System Shift Settings
- * Endpoint: /api/settings/shift
- * Added to resolve the 404 error during initial frontend load.
- */
-app.get('/api/settings/shift', async (req, res) => {
-    try {
-        // Assumes a table 'system_settings' exists with entry_cap and exit_cap columns
-        const result = await client.query('SELECT entry_cap as "entryCap", exit_cap as "exitCap" FROM system_settings WHERE id = 1;');
-        
-        const settings = result.rows.length > 0 
-            ? result.rows[0] 
-            : { entryCap: '09:00', exitCap: '18:00' }; // Default fallback if no row exists
 
-        res.status(200).json({ data: settings });
-    } catch (error) {
-        console.error('Error fetching shift settings:', error);
-        // Handle case where table might not exist yet during first run
-        if (error.code === '42P01') {
-            return res.status(200).json({ data: { entryCap: '09:00', exitCap: '18:00' } });
-        }
-        res.status(500).json({ error: 'Internal Server Error' });
-    }
-});
 
 /**
  * POST: Update System Shift Settings
