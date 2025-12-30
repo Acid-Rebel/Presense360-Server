@@ -634,3 +634,43 @@ app.get("/api/attendance/report", async (req, res) => {
 app.listen(port,'0.0.0.0',() => {
     console.log(`Server is running on http://localhost:${port}`);
 });
+
+
+
+const { spawn } = require('child_process');
+
+app.get('/backup-database', (req, res) => {
+    // 1. Get your internal URL from environment variables
+    // Format: postgres://user:password@internal-host:5432/db_name
+    const dbUrl = connectionString;
+
+    if (!dbUrl) {
+        return res.status(500).send('Internal Database URL not found.');
+    }
+
+    // 2. Set headers so the browser treats the response as a file download
+    const date = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Disposition', `attachment; filename="dump-${date}.sql"`);
+    res.setHeader('Content-Type', 'application/sql');
+
+    // 3. Spawn the pg_dump process
+    // We use the full URL to pass credentials automatically
+    const dump = spawn('pg_dump', [dbUrl]);
+
+    // 4. Pipe the output directly to the Express response
+    dump.stdout.pipe(res);
+
+    // 5. Handle potential errors
+    dump.stderr.on('data', (data) => {
+        console.error(`pg_dump error: ${data}`);
+    });
+
+    dump.on('close', (code) => {
+        if (code !== 0) {
+            console.log(`pg_dump process exited with code ${code}`);
+            if (!res.headersSent) {
+                res.status(500).send('Backup failed');
+            }
+        }
+    });
+});
