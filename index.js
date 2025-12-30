@@ -7,7 +7,7 @@ const { startAttendanceScheduler } = require('./attendance_scheduler');
 const connectionString =process.env.DATABASE_URL || "postgres://postgres:sql@123@localhost:5432/Presense360"
 const client = new Client({
   connectionString, 
-  ssl: process.env.DATABASE_URL_NEW ? { rejectUnauthorized: false } : false,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
 client.connect()
@@ -322,6 +322,13 @@ app.delete('/api/locations/:id', async (req, res) => {
 });
 
 
+app.post('/api/settings/shift', async (req, res) => {
+    const { entryCap, exitCap } = req.body;
+    // Logic to save these to a 'system_settings' table or config file
+    res.status(200).json({ message: 'Shift settings updated' });
+});
+
+
 
 app.get("/geocoordinates", verifyToken, async (req, res) => {
     const userID = req.user.rollno;
@@ -353,6 +360,8 @@ app.get("/geocoordinates", verifyToken, async (req, res) => {
         res.status(500).json({ message: "Internal server error", error: err.message });
     }
 });
+
+
 
 app.post('/login', async (req, res) => {
     const { user, pass, id } = req.body;
