@@ -38,18 +38,24 @@ const sendResponse = (res, status, message, data = null) => {
     res.status(status).json({ message, data });
 };
 
+function verifyAttendanceIntegrity(row) {
+    if (!row.signature) return false;
+    const expected = generateAttendanceSignature(row);
+    return expected === row.signature;
+}
 
-function generateAttendanceSignature(row) {
+
+function generateAttendanceSignature({ id, currdate, checkin, checkout, type }) {
     let rawData;
 
-    if (row.type === 0 && row.checkin && row.checkout) {
-        rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|${row.type}`;
+    if (type === 0 && checkin && checkout) {
+        rawData = `${id}|${currdate}|${checkin}|${checkout}|${type}`;
     }
-    else if (row.type === 0 && row.checkin && !row.checkout) {
-        rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.type}`;
+    else if (type === 0 && checkin && !checkout) {
+        rawData = `${id}|${currdate}|${checkin}|${type}`;
     }
     else {
-        rawData = `${row.id}|${row.currdate}|${row.type}`;
+        rawData = `${id}|${currdate}|${type}`;
     }
 
     return crypto
@@ -57,6 +63,7 @@ function generateAttendanceSignature(row) {
         .update(rawData)
         .digest('hex');
 }
+
 
 
 
@@ -131,10 +138,7 @@ app.get('/api/departments', async (req, res) => {
 });
 
 
-function verifyAttendanceIntegrity(row) {
-    const expectedSignature = generateAttendanceSignature(row);
-    return expectedSignature === row.signature;
-}
+
 
 
 
@@ -645,7 +649,8 @@ app.get("/dashboard/status/stat", verifyToken, async (req, res) => {
     }
 });
 
-// POST: Check-in logic
+
+// POST: Check-in logic (FIXED)
 app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
     const user = req.user.rollno;
     const datetime = getFormattedDateTime();
@@ -658,10 +663,16 @@ app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
             [user, date]
         );
 
+        // Case 1: No entry exists for today
         if (existingEntry.rows.length === 0) {
-            // 🔐 Generate signature for check-in
-            const rawData = `${user}|${date}|${time}|0`;
-            const signature = generateAttendanceSignature(rawData);
+
+            const signature = generateAttendanceSignature({
+                id: user,
+                currdate: date,
+                checkin: time,
+                checkout: null,
+                type: 0
+            });
 
             await client.query(
                 `INSERT INTO user_attendance 
@@ -671,70 +682,38 @@ app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
             );
 
             return res.status(201).json({ message: "Checked in successfully" });
+        }
 
-        } else if (existingEntry.rows[0].checkin === null) {
+        // Case 2: Entry exists but check-in is NULL (pre-day placeholder)
+        if (existingEntry.rows[0].checkin === null) {
 
-            const rawData = `${user}|${date}|${time}|0`;
-            const signature = generateAttendanceSignature(rawData);
+            const signature = generateAttendanceSignature({
+                id: user,
+                currdate: date,
+                checkin: time,
+                checkout: null,
+                type: 0
+            });
 
             await client.query(
                 `UPDATE user_attendance 
-                 SET type = 0, checkin = $1, signature = $2 
+                 SET type = 0, checkin = $1, signature = $2
                  WHERE ID = $3 AND currdate = $4`,
                 [time, signature, user, date]
             );
 
             return res.status(200).json({ message: "Checked in successfully" });
-
-        } else {
-            return res.status(400).json({ message: "Already checked in" });
         }
+
+        // Case 3: Already checked in
+        return res.status(400).json({ message: "Already checked in" });
+
     } catch (err) {
-        console.error("Error during checkin:", err);
+        console.error("Error during check-in:", err);
         return res.status(500).json({ message: "Internal server error" });
     }
 });
 
-
-// POST: Checkout logic
-app.post("/dashboard/status/checkout", verifyToken, async (req, res) => {
-    const user = req.user.rollno;
-    const datetime = getFormattedDateTime();
-    const date = datetime.slice(0, 10);
-    const time = datetime.slice(11, 19);
-
-    try {
-        const existingEntry = await client.query(
-            'SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2',
-            [user, date]
-        );
-
-        if (existingEntry.rows.length === 0 || existingEntry.rows[0].checkin === null) {
-            return res.status(400).json({ message: "Not checked in for today" });
-        } else if (existingEntry.rows[0].checkout !== null) {
-            return res.status(400).json({ message: "Already checked out" });
-        } else {
-
-            const checkinTime = existingEntry.rows[0].checkin;
-
-            // 🔐 Generate signature for full attendance record
-            const rawData = `${user}|${date}|${checkinTime}|${time}|CHECKOUT`;
-            const signature = generateAttendanceSignature(rawData);
-
-            await client.query(
-                `UPDATE user_attendance 
-                 SET checkout = $1, signature = $2 
-                 WHERE ID = $3 AND currdate = $4`,
-                [time, signature, user, date]
-            );
-
-            return res.status(200).json({ message: "Checked out successfully" });
-        }
-    } catch (err) {
-        console.error("Error during checkout:", err);
-        return res.status(500).json({ message: "Internal server error" });
-    }
-});
 
 
 
@@ -1027,7 +1006,14 @@ app.post('/api/migrate-attendance-signatures', async (req, res) => {
                 rawData = `${row.id}|${row.currdate}|TYPE|${row.type}`;
             }
 
-            const signature = generateAttendanceSignature(rawData);
+            const signature = generateAttendanceSignature({
+            id: row.id,
+            currdate: row.currdate,
+            checkin: row.checkin,
+            checkout: row.checkout,
+            type: row.type
+            });
+
 
             await client.query(
                 `
