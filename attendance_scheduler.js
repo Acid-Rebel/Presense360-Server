@@ -1,114 +1,148 @@
 const cron = require('node-cron');
-// NOTE: Assuming 'client' (PostgreSQL client) is initialized and connected 
-// from your main server.js file.
+const crypto = require('crypto');
 
-// --- STATUS CODE DEFINITIONS ---
-const PRE_DAY_TYPE = 5;      // Status for 'Not Checked In' (placeholder at start of day)
-const FINAL_ABSENT_TYPE = 4; // Final status for 'Absent' (confirmed at end of day)
-// --- END STATUS CODE DEFINITIONS ---
+// ------------------------------------------------------------------
+// CONFIG
+// ------------------------------------------------------------------
+const PRE_DAY_TYPE = 5;      // Not Checked In (start of day)
+const FINAL_ABSENT_TYPE = 4; // Absent (end of day)
 
+// MUST be same as main server signing key
+const SIGNING_KEY = process.env.SIGNING_KEY || "123456";
 
-/**
- * PHASE 1: Pre-Day Setup
- * Inserts a default 'Not Checked In' record (type 5) for all employees for the current day.
- */
+// ------------------------------------------------------------------
+// DIGITAL SIGNATURE HELPER (HMAC-SHA256)
+// ------------------------------------------------------------------
+function generateAttendanceSignature(data) {
+    return crypto
+        .createHmac('sha256', SIGNING_KEY)
+        .update(data)
+        .digest('hex');
+}
+
+// ------------------------------------------------------------------
+// PHASE 1: PRE-DAY SETUP
+// Inserts "Not Checked In" (Type 5) for all users
+// ------------------------------------------------------------------
 const runPreDaySetupJob = async (client) => {
-    // Get the current date (which is the start of the new day)
     const today = new Date().toISOString().slice(0, 10);
 
-    console.log(`[Scheduler] PHASE 1: Inserting PRE-DAY records (Type ${PRE_DAY_TYPE}) for date: ${today}`);
+    console.log(`[Scheduler] PHASE 1: Pre-day setup for ${today}`);
 
     try {
-        // 1. Get IDs of ALL active employees
-        const employeeQuery = 'SELECT ID FROM User_Info;';
-        const employeeResult = await client.query(employeeQuery);
+        // Fetch all employees
+        const employeeResult = await client.query('SELECT ID FROM User_Info;');
         const employeeIDs = employeeResult.rows.map(row => row.id);
 
         if (employeeIDs.length === 0) {
-            console.log('[Scheduler] No employees found for pre-day setup. Job finished.');
+            console.log('[Scheduler] No employees found.');
             return;
         }
 
-        // 2. Prepare the list of values to insert
-        const valuesToInsert = employeeIDs.map(id => 
-            // Insert ID, date, checkin=NULL, checkout=NULL, type=5
-            `('${id}', '${today}', NULL, NULL, ${PRE_DAY_TYPE})`
-        ).join(', ');
+        // Build signed bulk insert
+        const valuesToInsert = employeeIDs.map(id => {
+            const rawData = `${id}|${today}|AUTO|PRE_DAY`;
+            const signature = generateAttendanceSignature(rawData);
 
-        // 3. Perform a bulk INSERT operation
+            return `(
+                '${id}',
+                '${today}',
+                NULL,
+                NULL,
+                ${PRE_DAY_TYPE},
+                '${signature}'
+            )`;
+        }).join(', ');
+
         const insertQuery = `
-            INSERT INTO user_attendance (ID, currdate, checkin, checkout, type) 
+            INSERT INTO user_attendance
+            (ID, currdate, checkin, checkout, type, signature)
             VALUES ${valuesToInsert}
-            -- Conflict logic prevents double inserts if a manual record exists
             ON CONFLICT (ID, currdate) DO NOTHING;
         `;
 
-        const insertResult = await client.query(insertQuery);
+        const result = await client.query(insertQuery);
 
-        console.log(`[Scheduler] Inserted ${insertResult.rowCount} new 'Not Checked In' records (Type ${PRE_DAY_TYPE}).`);
+        console.log(`[Scheduler] Inserted ${result.rowCount} PRE-DAY records.`);
 
     } catch (error) {
-        console.error(`[Scheduler ERROR] PHASE 1 Failed for ${today}:`, error);
+        console.error('[Scheduler ERROR] Pre-day setup failed:', error);
     }
 };
 
-
-/**
- * PHASE 2: End-of-Day Finalization
- * Scans the ledger for the PREVIOUS day and changes all remaining Type 5 records 
- * (which were never checked in) to Type 4 (FINAL ABSENT).
- */
+// ------------------------------------------------------------------
+// PHASE 2: END-OF-DAY FINALIZATION
+// Converts remaining Type 5 → Type 4 (Absent)
+// ------------------------------------------------------------------
 const runEndOfDayFinalizationJob = async (client) => {
-    // Calculate the PREVIOUS day's date
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const targetDate = yesterday.toISOString().slice(0, 10);
 
-    console.log(`[Scheduler] PHASE 2: Finalizing attendance for date: ${targetDate}`);
+    console.log(`[Scheduler] PHASE 2: Finalizing ${targetDate}`);
 
     try {
-        const updateQuery = `
-            UPDATE user_attendance
-            SET 
-                type = ${FINAL_ABSENT_TYPE}, -- Change to final Absent (4)
-                -- Optional: Also set checkin/checkout to NULL if they aren't already
-                checkin = NULL,
-                checkout = NULL
-            WHERE 
-                currdate = $1 AND 
-                type = ${PRE_DAY_TYPE} AND -- Target only records still marked as PRE_DAY_TYPE (5)
-                checkin IS NULL;           -- Ensure we don't accidentally mark a check-in as absent
+        // Fetch records that will be finalized
+        const fetchQuery = `
+            SELECT ID, currdate
+            FROM user_attendance
+            WHERE
+                currdate = $1
+                AND type = ${PRE_DAY_TYPE}
+                AND checkin IS NULL;
         `;
-        
-        const updateResult = await client.query(updateQuery, [targetDate]);
 
-        console.log(`[Scheduler] Finalized ${updateResult.rowCount} records to FINAL ABSENT (Type ${FINAL_ABSENT_TYPE}) for ${targetDate}.`);
+        const records = await client.query(fetchQuery, [targetDate]);
+
+        if (records.rows.length === 0) {
+            console.log('[Scheduler] No records to finalize.');
+            return;
+        }
+
+        // Update each record with a fresh signature
+        for (const row of records.rows) {
+            const rawData = `${row.id}|${row.currdate}|AUTO|ABSENT`;
+            const signature = generateAttendanceSignature(rawData);
+
+            await client.query(
+                `
+                UPDATE user_attendance
+                SET
+                    type = $1,
+                    checkin = NULL,
+                    checkout = NULL,
+                    signature = $2
+                WHERE ID = $3 AND currdate = $4;
+                `,
+                [FINAL_ABSENT_TYPE, signature, row.id, row.currdate]
+            );
+        }
+
+        console.log(`[Scheduler] Finalized ${records.rowCount} ABSENT records.`);
 
     } catch (error) {
-        console.error(`[Scheduler ERROR] PHASE 2 Finalization Failed for ${targetDate}:`, error);
+        console.error('[Scheduler ERROR] Finalization failed:', error);
     }
 };
 
-
-/**
- * Schedule the two jobs.
- */
+// ------------------------------------------------------------------
+// SCHEDULER STARTUP
+// ------------------------------------------------------------------
 const startAttendanceScheduler = (client) => {
-    // 1. Run SETUP immediately on server start for today
-    runPreDaySetupJob(client); 
-    
-    // 2. Schedule PRE-DAY SETUP job (Runs every day at 00:01 for the NEW day)
+    // Run once on server start
+    runPreDaySetupJob(client);
+
+    // Daily pre-day setup (00:01 IST)
     cron.schedule('1 0 * * *', () => runPreDaySetupJob(client), {
-        timezone: "Asia/Kolkata" 
-    });
-    
-    // 3. Schedule FINALIZATION job (Runs every day at 03:00 for the PREVIOUS day)
-    // Running at 3 AM ensures all legitimate late check-outs from the previous day have been recorded.
-    cron.schedule('0 3 * * *', () => runEndOfDayFinalizationJob(client), {
-        timezone: "Asia/Kolkata" 
+        timezone: "Asia/Kolkata"
     });
 
-    console.log('[Scheduler] Two-Phase Attendance Job Scheduled: Setup (00:01) and Finalization (03:00).');
+    // Daily finalization (03:00 IST)
+    cron.schedule('0 3 * * *', () => runEndOfDayFinalizationJob(client), {
+        timezone: "Asia/Kolkata"
+    });
+
+    console.log('[Scheduler] Attendance scheduler started (Integrity-protected)');
 };
 
 module.exports = { startAttendanceScheduler };

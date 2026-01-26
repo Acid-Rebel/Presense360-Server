@@ -4,6 +4,8 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { startAttendanceScheduler } = require('./attendance_scheduler'); 
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
+
 
 
 
@@ -26,6 +28,8 @@ app.use(express.json());
 
 const JWT_KEY='123456';
 const AUTH_KEY='123456789';
+const SIGNING_KEY = process.env.SIGNING_KEY || "123456";
+
 
 
 const port = 3000;
@@ -33,6 +37,14 @@ const port = 3000;
 const sendResponse = (res, status, message, data = null) => {
     res.status(status).json({ message, data });
 };
+
+
+function generateAttendanceSignature(data) {
+    return crypto
+        .createHmac('sha256', SIGNING_KEY)
+        .update(data)
+        .digest('hex');
+}
 
 
 async function verifyToken(req, res, next) {
@@ -620,18 +632,40 @@ app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
     const time = datetime.slice(11, 19);
 
     try {
-        const existingEntry = await client.query('SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2', [user, date]);
+        const existingEntry = await client.query(
+            'SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2',
+            [user, date]
+        );
 
         if (existingEntry.rows.length === 0) {
-            // No entry exists, insert a new one
-            await client.query('INSERT INTO user_attendance (ID, currdate, checkin, checkout, type) VALUES ($1, $2, $3, NULL, 0)', [user, date, time]);
+            // 🔐 Generate signature for check-in
+            const rawData = `${user}|${date}|${time}|CHECKIN`;
+            const signature = generateAttendanceSignature(rawData);
+
+            await client.query(
+                `INSERT INTO user_attendance 
+                 (ID, currdate, checkin, checkout, type, signature)
+                 VALUES ($1, $2, $3, NULL, 0, $4)`,
+                [user, date, time, signature]
+            );
+
             return res.status(201).json({ message: "Checked in successfully" });
+
         } else if (existingEntry.rows[0].checkin === null) {
-            // Entry exists but no check-in time is recorded (e.g., from a leave request)
-            await client.query('UPDATE user_attendance SET type = 0, checkin = $1 WHERE ID = $2 AND currdate = $3', [time, user, date]);
+
+            const rawData = `${user}|${date}|${time}|CHECKIN`;
+            const signature = generateAttendanceSignature(rawData);
+
+            await client.query(
+                `UPDATE user_attendance 
+                 SET type = 0, checkin = $1, signature = $2 
+                 WHERE ID = $3 AND currdate = $4`,
+                [time, signature, user, date]
+            );
+
             return res.status(200).json({ message: "Checked in successfully" });
+
         } else {
-            // User is already checked in
             return res.status(400).json({ message: "Already checked in" });
         }
     } catch (err) {
@@ -639,6 +673,7 @@ app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
         return res.status(500).json({ message: "Internal server error" });
     }
 });
+
 
 // POST: Checkout logic
 app.post("/dashboard/status/checkout", verifyToken, async (req, res) => {
@@ -648,17 +683,30 @@ app.post("/dashboard/status/checkout", verifyToken, async (req, res) => {
     const time = datetime.slice(11, 19);
 
     try {
-        const existingEntry = await client.query('SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2', [user, date]);
+        const existingEntry = await client.query(
+            'SELECT * FROM user_attendance WHERE ID = $1 AND currdate = $2',
+            [user, date]
+        );
 
         if (existingEntry.rows.length === 0 || existingEntry.rows[0].checkin === null) {
-            // User has no entry for today or has not checked in
             return res.status(400).json({ message: "Not checked in for today" });
         } else if (existingEntry.rows[0].checkout !== null) {
-            // User has already checked out
             return res.status(400).json({ message: "Already checked out" });
         } else {
-            // Update the existing entry with checkout time
-            await client.query('UPDATE user_attendance SET checkout = $1 WHERE ID = $2 AND currdate = $3', [time, user, date]);
+
+            const checkinTime = existingEntry.rows[0].checkin;
+
+            // 🔐 Generate signature for full attendance record
+            const rawData = `${user}|${date}|${checkinTime}|${time}|CHECKOUT`;
+            const signature = generateAttendanceSignature(rawData);
+
+            await client.query(
+                `UPDATE user_attendance 
+                 SET checkout = $1, signature = $2 
+                 WHERE ID = $3 AND currdate = $4`,
+                [time, signature, user, date]
+            );
+
             return res.status(200).json({ message: "Checked out successfully" });
         }
     } catch (err) {
@@ -666,6 +714,7 @@ app.post("/dashboard/status/checkout", verifyToken, async (req, res) => {
         return res.status(500).json({ message: "Internal server error" });
     }
 });
+
 
 
 
@@ -913,6 +962,79 @@ app.post('/api/migrate-passwords', async (req, res) => {
         console.error("Password migration error:", error);
         res.status(500).json({
             message: "Password migration failed",
+            error: error.message
+        });
+    }
+});
+
+
+app.post('/api/migrate-attendance-signatures', async (req, res) => {
+    try {
+        // 1. Fetch attendance records without signature
+        const result = await client.query(`
+            SELECT ID, currdate, checkin, checkout, type
+            FROM user_attendance
+            WHERE signature IS NULL;
+        `);
+
+        if (result.rows.length === 0) {
+            return res.status(200).json({
+                message: "All attendance records already signed",
+                updated: 0
+            });
+        }
+
+        let updatedCount = 0;
+
+        // 2. Generate and store signature for each record
+        for (const row of result.rows) {
+            let rawData;
+
+            // Determine raw data format based on attendance type
+            if (row.type === 0 && row.checkin && row.checkout) {
+                // Normal present record
+                rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|CHECKOUT`;
+            } 
+            else if (row.type === 0 && row.checkin && !row.checkout) {
+                // Checked in but not checked out
+                rawData = `${row.id}|${row.currdate}|${row.checkin}|CHECKIN`;
+            }
+            else if (row.type === 5) {
+                // Pre-day placeholder
+                rawData = `${row.id}|${row.currdate}|AUTO|PRE_DAY`;
+            }
+            else if (row.type === 4) {
+                // Final absent
+                rawData = `${row.id}|${row.currdate}|AUTO|ABSENT`;
+            }
+            else {
+                // Fallback for other types (leave, holiday, etc.)
+                rawData = `${row.id}|${row.currdate}|TYPE|${row.type}`;
+            }
+
+            const signature = generateAttendanceSignature(rawData);
+
+            await client.query(
+                `
+                UPDATE user_attendance
+                SET signature = $1
+                WHERE ID = $2 AND currdate = $3;
+                `,
+                [signature, row.id, row.currdate]
+            );
+
+            updatedCount++;
+        }
+
+        res.status(200).json({
+            message: "Attendance signature migration completed",
+            updated: updatedCount
+        });
+
+    } catch (error) {
+        console.error("Attendance signature migration error:", error);
+        res.status(500).json({
+            message: "Attendance signature migration failed",
             error: error.message
         });
     }
