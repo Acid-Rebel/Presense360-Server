@@ -989,8 +989,7 @@ app.post('/api/migrate-attendance-signatures', async (req, res) => {
         // 1. Fetch attendance records without signature
         const result = await client.query(`
             SELECT ID, currdate, checkin, checkout, type
-            FROM user_attendance
-            WHERE signature IS NULL;
+            FROM user_attendance;
         `);
 
         if (result.rows.length === 0) {
