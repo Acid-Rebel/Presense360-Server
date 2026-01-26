@@ -147,7 +147,7 @@ app.get('/api/departments', async (req, res) => {
 // ====================================================================
 
 // GET: Fetch all employees
-app.get('/api/employees', async (req, res) => {
+app.get('/api/employees',verifyAdminToken, requireRole(['VIEW_ONLY', 'EMPLOYEE_ADMIN', 'SUPER_ADMIN']), async (req, res) => {
     try {
         const query = `
             SELECT
@@ -183,7 +183,7 @@ app.get('/api/locations', async (req, res) => {
 });
 
 // POST: Add a new employee
-app.post('/api/employees', async (req, res) => {
+app.post('/api/employees',verifyAdminToken,requireRole(['EMPLOYEE_ADMIN', 'SUPER_ADMIN']),async (req, res) => {
     const { ID, Name, mobile, Dept, LOCID } = req.body;
     
     if (!ID || !Name || !mobile || !Dept || !LOCID) {
@@ -217,7 +217,7 @@ app.post('/api/employees', async (req, res) => {
 // Update an employee
 
 // New PUT route for updating an existing employee
-app.put('/api/employees/:id', async (req, res) => {
+app.put('/api/employees/:id',verifyAdminToken,requireRole(['EMPLOYEE_ADMIN', 'SUPER_ADMIN']),async (req, res) => {
     const { Name, mobile, Dept, LOCID } = req.body;
     const { id } = req.params; // Extract ID from the URL
 
@@ -248,7 +248,7 @@ app.put('/api/employees/:id', async (req, res) => {
 });
 
 // DELETE: Remove an employee
-app.delete('/api/employees/:id', async (req, res) => {
+app.delete('/api/employees/:id',verifyAdminToken,requireRole(['SUPER_ADMIN']),async (req, res) => {
     const { id } = req.params;
     try {
         await client.query('BEGIN');
@@ -288,7 +288,7 @@ app.patch('/api/employees/face/:id', async (req, res) => {
 
 
 
-app.post('/api/settings/locations', async (req, res) => {
+app.post('/api/settings/locations',verifyAdminToken,requireRole(['SUPER_ADMIN']),async (req, res) => {
     const { id, coordinates } = req.body;
 
     if (!id || !coordinates || !Array.isArray(coordinates)) {
@@ -340,7 +340,7 @@ app.get('/api/settings/locations', async (req, res) => {
  * DELETE: Remove a geofence by ID
  * Endpoint: /api/locations/:id
  */
-app.delete('/api/settings/locations/:id', async (req, res) => {
+app.delete('/api/settings/locations/:id', verifyAdminToken,requireRole(['SUPER_ADMIN']),async (req, res) => {
     const { id } = req.params;
 
     try {
@@ -865,6 +865,92 @@ app.get("/api/attendance/report", async (req, res) => {
 });
 
 
+function verifyAdminToken(req, res, next) {
+    const bearerHeader = req.headers["authorization"];
+    if (!bearerHeader) {
+        return res.status(401).json({ message: "No token provided" });
+    }
+
+    const token = bearerHeader.split(" ")[1];
+
+    try {
+        const decoded = jwt.verify(token, JWT_KEY);
+        req.admin = decoded; // ✅ THIS WAS MISSING
+        next();
+    } catch (err) {
+        return res.status(403).json({ message: "Invalid or expired admin token" });
+    }
+}
+
+
+app.post('/api/admin/login', async (req, res) => {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+        return res.status(400).json({ message: 'Username and password required' });
+    }
+
+    try {
+        const result = await client.query(
+            `
+            SELECT 
+                id,
+                username,
+                password_hash,
+                role
+            FROM admin_users
+            WHERE username = $1
+            `,
+            [username]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        const admin = result.rows[0];
+
+        const match = await bcrypt.compare(password, admin.password_hash);
+        if (!match) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        const token = jwt.sign(
+            {
+                admin_id: admin.id,
+                role: admin.role   // ✅ FIX HERE
+            },
+            JWT_KEY,
+            { expiresIn: '8h' }
+        );
+
+        res.status(200).json({
+            message: 'Admin login successful',
+            token,
+            role: admin.role    // ✅ FIX HERE
+        });
+
+    } catch (err) {
+        console.error('Admin login error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+
+function requireRole(allowedRoles = []) {
+    return (req, res, next) => {
+        const role = req.admin.role;
+
+        if (!allowedRoles.includes(role)) {
+            return res.status(403).json({
+                message: "Access denied: insufficient privileges"
+            });
+        }
+        next();
+    };
+}
+
+
 
 
 app.listen(port,'0.0.0.0',() => {
@@ -1040,3 +1126,68 @@ app.post('/api/migrate-attendance-signatures', async (req, res) => {
         });
     }
 });
+
+
+// Seed admin users with predefined roles
+app.post('/api/admin/seed-admins', async (req, res) => {
+    try {
+        const saltRounds = 10;
+
+        // Predefined admin users
+        const admins = [
+            {
+                username: 'viewer_admin',
+                password: 'viewer123',
+                role: 'VIEW_ONLY'
+            },
+            {
+                username: 'employee_admin',
+                password: 'employee123',
+                role: 'EMPLOYEE_ADMIN'
+            },
+            {
+                username: 'super_admin',
+                password: 'super123',
+                role: 'SUPER_ADMIN'
+            }
+        ];
+
+        await client.query('BEGIN');
+
+        for (const admin of admins) {
+            const passwordHash = await bcrypt.hash(admin.password, saltRounds);
+
+            await client.query(
+                `
+                INSERT INTO admin_users (username, password_hash, role)
+                VALUES ($1, $2, $3)
+                `,
+                [admin.username, passwordHash, admin.role]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        res.status(201).json({
+            message: 'Admin users created successfully',
+            admins: admins.map(a => ({ username: a.username, role: a.role }))
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+
+        // Handle duplicate username nicely
+        if (error.code === '23505') {
+            return res.status(409).json({
+                message: 'One or more admin users already exist'
+            });
+        }
+
+        console.error('Error seeding admin users:', error);
+        res.status(500).json({
+            message: 'Failed to create admin users',
+            error: error.message
+        });
+    }
+});
+
