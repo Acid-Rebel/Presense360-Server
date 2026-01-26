@@ -117,6 +117,32 @@ app.get('/api/departments', async (req, res) => {
     }
 });
 
+
+function verifyAttendanceIntegrity(row) {
+    let rawData;
+
+    if (row.type === 0 && row.checkin && row.checkout) {
+        rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|CHECKOUT`;
+    }
+    else if (row.type === 0 && row.checkin && !row.checkout) {
+        rawData = `${row.id}|${row.currdate}|${row.checkin}|CHECKIN`;
+    }
+    else if (row.type === 5) {
+        rawData = `${row.id}|${row.currdate}|AUTO|PRE_DAY`;
+    }
+    else if (row.type === 4) {
+        rawData = `${row.id}|${row.currdate}|AUTO|ABSENT`;
+    }
+    else {
+        rawData = `${row.id}|${row.currdate}|TYPE|${row.type}`;
+    }
+
+    const computedSignature = generateAttendanceSignature(rawData);
+
+    return computedSignature === row.signature;
+}
+
+
 // ====================================================================
 // Existing Endpoints (unchanged)
 // ====================================================================
@@ -788,7 +814,7 @@ app.get("/attendance", verifyToken, async (req, res) => {
 const SHIFT_START_TIME = '09:00:00'; // Define the standard shift start time here
 
 app.get("/api/attendance/report", async (req, res) => {
-    
+
     try {
         const queryText = `
             SELECT 
@@ -798,19 +824,16 @@ app.get("/api/attendance/report", async (req, res) => {
                 ua.checkin, 
                 ua.checkout, 
                 ua.type,
-                li.LOCID, -- NEW: Location ID
-                d.label AS dept_label, -- NEW: Department Label
-                
-                -- 1. Infer final status label
+                ua.signature, -- 🔐 FETCH SIGNATURE
+                li.LOCID,
+                d.label AS dept_label,
+
                 CASE
-                    -- Type-based statuses (highest priority)
                     WHEN ua.type = 1 THEN 'On Leave (Standard)'
                     WHEN ua.type = 2 THEN 'On Leave (Medical)'
                     WHEN ua.type = 3 THEN 'Public Holiday'
                     WHEN ua.type = 4 THEN 'Absent'
                     WHEN ua.type = 5 AND ua.checkin IS NULL AND ua.checkout IS NULL THEN 'Not Checked In'
-
-                    -- Attendance-based statuses (type 0 = Present)
                     WHEN ua.type = 0 AND ua.checkin IS NOT NULL AND ua.checkout IS NOT NULL THEN
                         CASE
                             WHEN ua.checkin > TIME '${SHIFT_START_TIME}' THEN 'Late'
@@ -818,12 +841,9 @@ app.get("/api/attendance/report", async (req, res) => {
                         END
                     WHEN ua.type = 0 AND ua.checkin IS NOT NULL AND ua.checkout IS NULL THEN 
                         'Present (Clocked In)'
-                    
-                    -- Catch-all
                     ELSE 'Unresolved'
                 END AS final_status,
-                
-                -- 2. Infer Exception Reason
+
                 CASE
                     WHEN ua.type = 4 THEN 'Confirmed Absence'
                     WHEN ua.type = 0 AND ua.checkout IS NULL AND ua.checkin IS NOT NULL THEN 'Missing Checkout'
@@ -831,44 +851,45 @@ app.get("/api/attendance/report", async (req, res) => {
                     ELSE NULL
                 END AS exception_reason,
 
-                -- 3. Calculate duration
                 CASE
                     WHEN ua.checkin IS NOT NULL AND ua.checkout IS NOT NULL THEN
                         EXTRACT(EPOCH FROM (ua.checkout - ua.checkin)) / 3600
-                    ELSE 
-                        0
+                    ELSE 0
                 END AS duration_hours,
 
-                -- 4. Get Face Status (Assumed from a join to User_Info in the full service)
                 fi.Status AS face_status
                 
             FROM user_attendance ua
-            -- REQUIRED JOINS
             INNER JOIN User_Info ui ON ua.ID = ui.ID
-            LEFT JOIN Location_Info li ON ui.ID = li.ID -- Get Location ID (LOCID)
-            LEFT JOIN Department d ON ui.Dept = d.ID     -- Get Department Label
-            LEFT JOIN Face_Info fi ON ui.ID = fi.ID      -- Get Face Status
-            -- END REQUIRED JOINS
-            
+            LEFT JOIN Location_Info li ON ui.ID = li.ID
+            LEFT JOIN Department d ON ui.Dept = d.ID
+            LEFT JOIN Face_Info fi ON ui.ID = fi.ID
             ORDER BY ua.currdate DESC, ui.Name ASC;
         `;
-        
+
         const result = await client.query(queryText);
 
-        res.status(200).json({ 
-            message: "All attendance records fetched for admin report",
-            data: result.rows 
+        // 🔐 VERIFY INTEGRITY FOR EACH RECORD
+        const verifiedData = result.rows.map(row => ({
+            ...row,
+            integrity_status: verifyAttendanceIntegrity(row) ? "VALID" : "TAMPERED"
+        }));
+
+        res.status(200).json({
+            message: "Admin attendance report fetched with integrity verification",
+            data: verifiedData
         });
 
     } catch (err) {
         console.error("Error fetching admin report attendance data:", err);
-        
-        res.status(500).json({ 
+
+        res.status(500).json({
             message: "Internal server error while retrieving attendance data",
-            error: err.message 
+            error: err.message
         });
     }
 });
+
 
 
 
