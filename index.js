@@ -39,12 +39,25 @@ const sendResponse = (res, status, message, data = null) => {
 };
 
 
-function generateAttendanceSignature(data) {
+function generateAttendanceSignature(row) {
+    let rawData;
+
+    if (row.type === 0 && row.checkin && row.checkout) {
+        rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|${row.type}`;
+    }
+    else if (row.type === 0 && row.checkin && !row.checkout) {
+        rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.type}`;
+    }
+    else {
+        rawData = `${row.id}|${row.currdate}|${row.type}`;
+    }
+
     return crypto
         .createHmac('sha256', SIGNING_KEY)
-        .update(data)
+        .update(rawData)
         .digest('hex');
 }
+
 
 
 async function verifyToken(req, res, next) {
@@ -119,28 +132,10 @@ app.get('/api/departments', async (req, res) => {
 
 
 function verifyAttendanceIntegrity(row) {
-    let rawData;
-
-    if (row.type === 0 && row.checkin && row.checkout) {
-        rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|CHECKOUT`;
-    }
-    else if (row.type === 0 && row.checkin && !row.checkout) {
-        rawData = `${row.id}|${row.currdate}|${row.checkin}|CHECKIN`;
-    }
-    else if (row.type === 5) {
-        rawData = `${row.id}|${row.currdate}|AUTO|PRE_DAY`;
-    }
-    else if (row.type === 4) {
-        rawData = `${row.id}|${row.currdate}|AUTO|ABSENT`;
-    }
-    else {
-        rawData = `${row.id}|${row.currdate}|TYPE|${row.type}`;
-    }
-
-    const computedSignature = generateAttendanceSignature(rawData);
-
-    return computedSignature === row.signature;
+    const expectedSignature = generateAttendanceSignature(row);
+    return expectedSignature === row.signature;
 }
+
 
 
 // ====================================================================
@@ -665,7 +660,7 @@ app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
 
         if (existingEntry.rows.length === 0) {
             // 🔐 Generate signature for check-in
-            const rawData = `${user}|${date}|${time}|CHECKIN`;
+            const rawData = `${user}|${date}|${time}|0`;
             const signature = generateAttendanceSignature(rawData);
 
             await client.query(
@@ -679,7 +674,7 @@ app.post("/dashboard/status/checkin", verifyToken, async (req, res) => {
 
         } else if (existingEntry.rows[0].checkin === null) {
 
-            const rawData = `${user}|${date}|${time}|CHECKIN`;
+            const rawData = `${user}|${date}|${time}|0`;
             const signature = generateAttendanceSignature(rawData);
 
             await client.query(
@@ -1014,19 +1009,19 @@ app.post('/api/migrate-attendance-signatures', async (req, res) => {
             // Determine raw data format based on attendance type
             if (row.type === 0 && row.checkin && row.checkout) {
                 // Normal present record
-                rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|CHECKOUT`;
+                rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.checkout}|${row.type}`;
             } 
             else if (row.type === 0 && row.checkin && !row.checkout) {
                 // Checked in but not checked out
-                rawData = `${row.id}|${row.currdate}|${row.checkin}|CHECKIN`;
+                rawData = `${row.id}|${row.currdate}|${row.checkin}|${row.type}`;
             }
             else if (row.type === 5) {
                 // Pre-day placeholder
-                rawData = `${row.id}|${row.currdate}|AUTO|PRE_DAY`;
+                rawData = `${row.id}|${row.currdate}|AUTO|${row.type}`;
             }
             else if (row.type === 4) {
                 // Final absent
-                rawData = `${row.id}|${row.currdate}|AUTO|ABSENT`;
+                rawData = `${row.id}|${row.currdate}|AUTO|${row.type}`;
             }
             else {
                 // Fallback for other types (leave, holiday, etc.)
