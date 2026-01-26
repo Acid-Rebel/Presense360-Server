@@ -3,6 +3,9 @@ const { Client } = require('pg');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { startAttendanceScheduler } = require('./attendance_scheduler'); 
+const bcrypt = require('bcrypt');
+
+
 
 const connectionString =process.env.DATABASE_URL || "postgres://postgres:sql@123@localhost:5432/Presense360"
 const client = new Client({
@@ -151,15 +154,19 @@ app.post('/api/employees', async (req, res) => {
     }
 
     try {
+        const plainPassword = '12345'; // or generated password
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(plainPassword, saltRounds);
         await client.query('BEGIN');
         const userInsert = `INSERT INTO User_Info (ID, Name, mobile, Dept) VALUES ($1, $2, $3, $4) RETURNING *;`;
         const userResult = await client.query(userInsert, [ID, Name, mobile, Dept]);
-        const loginInsert=`INSERT INTO Login_Info (ID,password) VALUES ($1,$2);`
+        const loginInsert = `INSERT INTO Login_Info (ID, password_hash) VALUES ($1, $2);`;
+
         const faceInsert = `INSERT INTO Face_Info (ID, Status) VALUES ($1, 0);`;
         await client.query(faceInsert, [ID]);
         const locationInsert = `INSERT INTO Location_Info (ID, LOCID) VALUES ($1, $2);`;
         await client.query(locationInsert, [ID, LOCID]);
-        await client.query(loginInsert, [ID, '12345']);
+        await client.query(loginInsert, [ID, passwordHash]);
         await client.query('COMMIT');
         
         sendResponse(res, 201, 'Employee added successfully', userResult.rows[0]);
@@ -439,48 +446,76 @@ app.post('/login', async (req, res) => {
     }
 
     try {
-        // 1. Check if the user exists and the password is correct
-        const userResult = await client.query('SELECT * FROM Login_Info WHERE id = $1', [user]);
+        // 1. Fetch hashed password
+        const userResult = await client.query(
+            'SELECT password_hash FROM Login_Info WHERE id = $1',
+            [user]
+        );
+
         const loginData = userResult.rows[0];
 
         if (!loginData) {
-            console.log("Wrong user");
             return res.status(401).json({ message: "Invalid username or password" });
         }
 
-        if (loginData.password !== pass) {
-            console.log("Wrong password");
+        // 2. Secure password verification (HASH + SALT)
+        const isMatch = await bcrypt.compare(pass, loginData.password_hash);
+
+        if (!isMatch) {
             return res.status(401).json({ message: "Invalid username or password" });
         }
 
-        // 2. Check the device ID
-        const deviceResult = await client.query('SELECT * FROM device_id WHERE id = $1', [user]);
+        // 3. Check device ID (UNCHANGED)
+        const deviceResult = await client.query(
+            'SELECT * FROM device_id WHERE id = $1',
+            [user]
+        );
         const deviceData = deviceResult.rows[0];
 
         // Case A: First-time login from a new device
         if (!deviceData) {
-            await client.query('INSERT INTO device_id (id, dev_id) VALUES ($1, $2)', [user, id]);
-            console.log("Login successful, new device registered");
-            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1Y" });
-            return res.status(201).json({ message: "Login successful, new device registered", token });
+            await client.query(
+                'INSERT INTO device_id (id, dev_id) VALUES ($1, $2)',
+                [user, id]
+            );
+
+            const token = jwt.sign(
+                { rollno: user, id: id },
+                JWT_KEY,
+                { expiresIn: "1Y" }
+            );
+
+            return res.status(201).json({
+                message: "Login successful, new device registered",
+                token
+            });
         }
 
-        // Case B: Login from the already-registered device
+        // Case B: Login from the registered device
         if (deviceData.dev_id === id) {
-            console.log("Login successful");
-            const token = jwt.sign({ rollno: user, id: id }, JWT_KEY, { expiresIn: "1Y" });
-            return res.status(200).json({ message: "Login successful", token });
+            const token = jwt.sign(
+                { rollno: user, id: id },
+                JWT_KEY,
+                { expiresIn: "1Y" }
+            );
+
+            return res.status(200).json({
+                message: "Login successful",
+                token
+            });
         }
 
-        // Case C: Login from a different device
-        console.log("Account already registered on another device");
-        return res.status(403).json({ message: "Account already registered on another device. Please use the original device." });
+        // Case C: Different device
+        return res.status(403).json({
+            message: "Account already registered on another device. Please use the original device."
+        });
 
     } catch (error) {
         console.error("Database or server error:", error);
         return res.status(500).json({ message: "Internal server error" });
     }
 });
+
 
 app.get("/verify", verifyToken, (req, res) => {
     // If we get here, the token has been successfully verified by the middleware.
@@ -830,4 +865,55 @@ app.get('/backup-database', (req, res) => {
             }
         }
     });
+});
+
+
+app.post('/api/migrate-passwords', async (req, res) => {
+    try {
+        // 1. Fetch users without hashed passwords
+        const result = await client.query(`
+            SELECT id 
+            FROM Login_Info 
+            WHERE password_hash IS NULL OR password_hash = '';
+        `);
+
+        if (result.rows.length === 0) {
+            return res.status(200).json({
+                message: "All users already have hashed passwords",
+                updated: 0
+            });
+        }
+
+        const saltRounds = 10;
+        let updatedCount = 0;
+
+        // 2. Hash default password for each user
+        for (const row of result.rows) {
+            const userId = row.id;
+            const defaultPassword = '12345';
+
+            const passwordHash = await bcrypt.hash(defaultPassword, saltRounds);
+
+            await client.query(
+                `UPDATE Login_Info 
+                 SET password_hash = $1 
+                 WHERE id = $2`,
+                [passwordHash, userId]
+            );
+
+            updatedCount++;
+        }
+
+        res.status(200).json({
+            message: "Password migration completed successfully",
+            updated: updatedCount
+        });
+
+    } catch (error) {
+        console.error("Password migration error:", error);
+        res.status(500).json({
+            message: "Password migration failed",
+            error: error.message
+        });
+    }
 });

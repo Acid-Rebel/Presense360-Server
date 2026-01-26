@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "Backend for Presense360",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "body-parser": "^2.2.0",
     "canvas": "^3.1.0",
     "cors": "^2.8.5",
